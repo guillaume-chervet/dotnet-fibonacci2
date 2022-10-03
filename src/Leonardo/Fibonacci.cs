@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection.Metadata;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 
@@ -13,8 +14,15 @@ public record FiboData
     public bool IsFromCache { get; set; }
 }
 
-public  class Fibonacci
+public class Fibonacci
 {
+    private readonly FibonacciDataContext _fibonacciDataContext;
+
+    public Fibonacci(FibonacciDataContext fibonacciDataContext)
+    {
+        _fibonacciDataContext = fibonacciDataContext;
+    }
+   
     
     public static int Run(int i)
     {
@@ -22,59 +30,57 @@ public  class Fibonacci
         return Run(i - 1) + Run(i - 2);
     }    
     
-    public static async Task<List<long>> RunAsync(string[] args)    {          
+    public async Task<List<long>> RunAsync(string[] args)    {          
         var tasks = new List<Task<FiboData>>();
-
-        using var context = new FibonacciDataContext();
-        foreach (var arg in args)
-        {
-            var int32 = Convert.ToInt32(arg);
-            var queryResult = await context.TFibonaccis.Where(f => f.FibInput == int32)
-                .Select(f => f.FibOutput).FirstOrDefaultAsync();
-
-            if (queryResult == default)
+            foreach (var arg in args)
             {
-                var result = Task.Run(() =>
+                var int32 = Convert.ToInt32(arg);
+                var queryResult = await _fibonacciDataContext.TFibonaccis.Where(f => f.FibInput == int32)
+                    .Select(f => f.FibOutput).FirstOrDefaultAsync();
+
+                if (queryResult == default)
                 {
-                    return new FiboData
+                    var result = Task.Run(() =>
                     {
-                        Output = Fibonacci.Run(int32),
+                        return new FiboData
+                        {
+                            Output = Fibonacci.Run(int32),
+                            Input = int32,
+                            IsFromCache = false
+                        };
+                    });
+                    tasks.Add(result);
+                }
+                else
+                {
+                    tasks.Add(Task.FromResult(new FiboData
+                    {
+                        Output = queryResult,
                         Input = int32,
-                        IsFromCache = false
-                    };
-                });
-                tasks.Add(result);
+                        IsFromCache = true
+                    }));
+                }
             }
-            else
+
+            Task.WaitAll(tasks.ToArray());
+
+            var results = tasks.Select(t => t.Result).ToList();
+
+            foreach (var result in results)
             {
-                tasks.Add(Task.FromResult(new FiboData
+                if (!result.IsFromCache)
                 {
-                    Output = queryResult,
-                    Input = int32,
-                    IsFromCache = true
-                }));
+                    _fibonacciDataContext.TFibonaccis.Add(new TFibonacci()
+                    {
+                        FibOutput = result.Output,
+                        FibCreatedTimestamp = DateTime.Now,
+                        FibInput = result.Input,
+                    });
+                }
             }
-        }
 
-        Task.WaitAll(tasks.ToArray());
-            
-        var results = tasks.Select(t=>t.Result).ToList();
+            await _fibonacciDataContext.SaveChangesAsync();
 
-        foreach (var result in results)
-        {
-            if (!result.IsFromCache)
-            {
-                context.TFibonaccis.Add(new TFibonacci()
-                {
-                    FibOutput = result.Output,
-                    FibCreatedTimestamp = DateTime.Now,
-                    FibInput = result.Input,
-                });
-            }
-        }
-
-        await context.SaveChangesAsync();
-
-        return results.Select(r => r.Output).ToList();
+            return results.Select(r => r.Output).ToList();
     }     
 }
